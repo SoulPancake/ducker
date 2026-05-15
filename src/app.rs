@@ -479,7 +479,7 @@ impl eframe::App for DuckerApp {
             ui.set_height(92.0);
             ui.horizontal(|ui| {
                 ui.heading(
-                    egui::RichText::new("DUCKER  \u{1F986}")
+                    egui::RichText::new("DUCKER  🦆")
                         .monospace()
                         .size(34.0)
                         .color(Color32::from_rgb(255, 214, 64))
@@ -637,14 +637,14 @@ impl eframe::App for DuckerApp {
 
                             ui.vertical_centered(|ui| {
                                 ui.label(
-                                    egui::RichText::new("Make It Quack \u{1F986}")
+                                    egui::RichText::new("Make It Quack 🦆")
                                         .size(24.0)
                                         .strong()
                                         .color(Color32::from_rgb(255, 214, 64)),
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
-                                    egui::RichText::new("Guitar In \u{2192} Duck Out")
+                                    egui::RichText::new("Guitar In → Duck Out")
                                         .size(14.0)
                                         .color(Color32::from_rgb(180, 174, 210)),
                                 );
