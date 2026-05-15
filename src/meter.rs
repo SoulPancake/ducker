@@ -6,8 +6,8 @@ const PEAK_FALL_TIME_SECONDS: f32 = 0.3;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeterData {
     pub input_peak_db: f32,
-    pub sidechain_peak_db: f32,
-    pub gain_reduction_db: f32,
+    pub envelope: f32,
+    pub cutoff_hz: f32,
     pub output_peak_db: f32,
 }
 

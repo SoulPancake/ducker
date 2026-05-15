@@ -1,156 +1,89 @@
-use crate::params::ParamsSnapshot;
+use crate::params::{Direction, FilterMode, ParamsSnapshot};
+use std::f32::consts::PI;
 
-const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
-const MIN_HPF_CUTOFF_HZ: f32 = 1.0;
-
+/// Envelope Filter (Auto-Wah) DSP processor.
+///
+/// Signal chain: [Pre-Compressor] → [Envelope Follower] → [State Variable Filter] → Output
 #[derive(Debug)]
-pub struct QuackGenerator {
+pub struct EnvelopeFilterDsp {
     sample_rate: f32,
-    phase: f32,
-    quack_time: f32,
-    quack_duration: f32,
-    quack_gain: f32,
-    is_quacking: bool,
-}
-
-impl QuackGenerator {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            sample_rate,
-            phase: 0.0,
-            quack_time: 0.0,
-            quack_duration: 0.15,
-            quack_gain: 0.35,
-            is_quacking: false,
-        }
-    }
-
-    pub fn trigger(&mut self) {
-        if !self.is_quacking {
-            self.is_quacking = true;
-            self.quack_time = 0.0;
-            self.phase = 0.0;
-        }
-    }
-
-    pub fn process_sample(&mut self) -> f32 {
-        if !self.is_quacking {
-            return 0.0;
-        }
-
-        let dt = 1.0 / self.sample_rate;
-        self.quack_time += dt;
-
-        if self.quack_time >= self.quack_duration {
-            self.is_quacking = false;
-            return 0.0;
-        }
-
-        // Smooth attack/decay to avoid clicky transients.
-        let env_t = self.quack_time / self.quack_duration;
-        let attack = ((env_t * 10.0).min(1.0)).powf(0.6);
-        let decay = (1.0 - env_t).powf(2.0);
-        let envelope = attack * decay;
-
-        // Pitch sweeps down (350 Hz -> 150 Hz)
-        let freq_start = 350.0;
-        let freq_end = 150.0;
-        let freq = freq_start + (freq_end - freq_start) * env_t;
-
-        let phase_increment = TWO_PI * freq * dt;
-        self.phase += phase_increment;
-        if self.phase > TWO_PI {
-            self.phase -= TWO_PI;
-        }
-
-        self.phase.sin() * envelope * self.quack_gain
-    }
-
-    pub fn set_intensity(&mut self, intensity: f32) {
-        let i = intensity.clamp(0.1, 10.0);
-        self.quack_duration = (0.08 + (i * 0.02)).clamp(0.08, 0.28);
-        self.quack_gain = (0.20 + (i * 0.09)).clamp(0.20, 0.95);
-    }
-}
-
-#[derive(Debug)]
-pub struct DuckerDsp {
-    sample_rate: f32,
+    // Envelope follower state
     envelope: f32,
-    hp_x1: f32,
-    hp_y1: f32,
-    quack_gen: QuackGenerator,
-    last_gr_db: f32,
-    quack_armed: bool,
+    // Chamberlin SVF state
+    svf_low: f32,
+    svf_band: f32,
+    // Pre-compressor state
+    comp_envelope: f32,
+    // Last computed cutoff for metering
+    last_cutoff_hz: f32,
 }
 
-impl DuckerDsp {
+impl EnvelopeFilterDsp {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            sample_rate,
+            sample_rate: sample_rate.max(1.0),
             envelope: 0.0,
-            hp_x1: 0.0,
-            hp_y1: 0.0,
-            quack_gen: QuackGenerator::new(sample_rate),
-            last_gr_db: 0.0,
-            quack_armed: true,
+            svf_low: 0.0,
+            svf_band: 0.0,
+            comp_envelope: 0.0,
+            last_cutoff_hz: 200.0,
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate.max(1.0);
-        self.quack_gen.sample_rate = sample_rate.max(1.0);
     }
 
+    #[inline]
     fn coeff_for_ms(&self, ms: f32) -> f32 {
         (-1.0 / ((ms.max(0.001) * 0.001) * self.sample_rate)).exp()
     }
 
-    fn highpass(&mut self, sample: f32, cutoff_hz: f32) -> f32 {
-        let coeff = (-TWO_PI * cutoff_hz.max(MIN_HPF_CUTOFF_HZ) / self.sample_rate).exp();
-        let y = coeff * (self.hp_y1 + sample - self.hp_x1);
-        self.hp_x1 = sample;
-        self.hp_y1 = y;
-        y
-    }
+    /// Simple feed-forward compressor. Returns compressed sample.
+    #[inline]
+    fn compress(&mut self, sample: f32, threshold_db: f32, ratio: f32) -> f32 {
+        let abs_sample = sample.abs();
+        // Track RMS-ish envelope for compressor
+        let comp_attack_coeff = self.coeff_for_ms(1.0);
+        let comp_release_coeff = self.coeff_for_ms(80.0);
 
-    fn gain_reduction_db(env_db: f32, threshold_db: f32, ratio: f32, knee_db: f32) -> f32 {
-        let ratio = ratio.max(1.0);
-        let over = env_db - threshold_db;
-
-        if knee_db <= 0.0 {
-            if over <= 0.0 {
-                0.0
-            } else {
-                (threshold_db + over / ratio) - env_db
-            }
+        if abs_sample > self.comp_envelope {
+            self.comp_envelope =
+                comp_attack_coeff * self.comp_envelope + (1.0 - comp_attack_coeff) * abs_sample;
         } else {
-            let half = knee_db * 0.5;
-            if over <= -half {
-                0.0
-            } else if over >= half {
-                (threshold_db + over / ratio) - env_db
-            } else {
-                let x = (over + half) / knee_db;
-                let hard = (threshold_db + over / ratio) - env_db;
-                hard * x * x
-            }
+            self.comp_envelope =
+                comp_release_coeff * self.comp_envelope + (1.0 - comp_release_coeff) * abs_sample;
         }
+
+        let env_db = 20.0 * self.comp_envelope.max(1e-6).log10();
+        let over = env_db - threshold_db;
+        if over <= 0.0 {
+            return sample;
+        }
+        let ratio = ratio.max(1.0);
+        let gr_db = over - over / ratio;
+        let gain = 10.0f32.powf(-gr_db / 20.0);
+        sample * gain
     }
 
+    /// Process a single mono input sample. Returns (output_sample, envelope_value, cutoff_hz).
     pub fn process_sample(
         &mut self,
-        main_sample: f32,
-        sidechain_sample: f32,
+        input: f32,
         params: &ParamsSnapshot,
-    ) -> (f32, f32) {
-        let sc = if params.sc_highpass_on {
-            self.highpass(sidechain_sample, params.sc_hpf_freq_hz)
+    ) -> (f32, f32, f32) {
+        // --- Pre-Compressor (optional) ---
+        let signal = if params.pre_comp_on {
+            let compressed = self.compress(input, params.comp_threshold_db, params.comp_ratio);
+            let makeup = 10.0f32.powf(params.makeup_db / 20.0);
+            compressed * makeup
         } else {
-            sidechain_sample
+            input
         };
 
-        let rect = sc.abs();
+        // --- Envelope Follower ---
+        let rect = signal.abs();
         let attack_coeff = self.coeff_for_ms(params.attack_ms);
         let release_coeff = self.coeff_for_ms(params.release_ms);
 
@@ -160,65 +93,119 @@ impl DuckerDsp {
             self.envelope = release_coeff * self.envelope + (1.0 - release_coeff) * rect;
         }
 
-        let env_db = 20.0 * self.envelope.max(1e-6).log10();
-        let gr_db =
-            Self::gain_reduction_db(env_db, params.threshold_db, params.ratio, params.knee_db)
-                .min(0.0);
+        // --- Envelope → Cutoff Mapping ---
+        let freq_min = params.freq_min_hz;
+        let freq_max = params.freq_max_hz;
+        let sensitivity = params.sensitivity;
+        let scaled = (self.envelope * sensitivity).clamp(0.0, 1.0);
 
-        // Set quack intensity from params
-        self.quack_gen.set_intensity(params.quack_intensity);
+        let cutoff_hz = match params.direction {
+            Direction::Up => freq_min * (freq_max / freq_min).powf(scaled),
+            Direction::Down => freq_max * (freq_min / freq_max).powf(scaled),
+        };
+        self.last_cutoff_hz = cutoff_hz;
 
-        // Hysteresis trigger: avoids rapid retriggers that sound like "bullets".
-        if self.quack_armed && gr_db < -1.5 {
-            self.quack_gen.trigger();
-            self.quack_armed = false;
-        } else if gr_db > -0.2 {
-            self.quack_armed = true;
-        }
-        self.last_gr_db = gr_db;
+        // --- Chamberlin State Variable Filter ---
+        let f = 2.0 * (PI * cutoff_hz / self.sample_rate).sin();
+        let q = 1.0 / params.resonance;
 
-        let gain = 10.0f32.powf(gr_db / 20.0);
-        let makeup = 10.0f32.powf(params.makeup_db / 20.0);
-        let wet = main_sample * gain * makeup;
+        self.svf_low = self.svf_low + f * self.svf_band;
+        let high = signal - self.svf_low - q * self.svf_band;
+        self.svf_band = f * high + self.svf_band;
+
+        let filtered = match params.filter_mode {
+            FilterMode::LowPass => self.svf_low,
+            FilterMode::BandPass => self.svf_band,
+            FilterMode::HighPass => high,
+        };
+
+        // --- Dry/Wet Mix ---
         let dry_wet = (params.dry_wet_percent / 100.0).clamp(0.0, 1.0);
-        let out = (main_sample * (1.0 - dry_wet)) + (wet * dry_wet);
+        let out = signal * (1.0 - dry_wet) + filtered * dry_wet;
 
-        let quack_sample = self.quack_gen.process_sample();
+        // Soft clip to prevent harsh spikes
+        let final_out = out.tanh();
 
-        // Soft clip to prevent harsh spikes when quack + guitar sum exceeds 0 dBFS.
-        let final_out = (out + quack_sample).tanh();
-
-        (final_out, gr_db)
+        (final_out, self.envelope, cutoff_hz)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{Direction, FilterMode};
 
     fn snapshot() -> ParamsSnapshot {
         ParamsSnapshot {
-            threshold_db: -30.0,
-            ratio: 10.0,
-            attack_ms: 1.0,
+            sensitivity: 0.65,
+            freq_min_hz: 250.0,
+            freq_max_hz: 2500.0,
+            resonance: 3.5,
+            attack_ms: 6.0,
             release_ms: 100.0,
-            knee_db: 0.0,
+            filter_mode: FilterMode::BandPass,
+            direction: Direction::Up,
+            pre_comp_on: true,
+            comp_threshold_db: -16.0,
+            comp_ratio: 8.0,
             makeup_db: 0.0,
-            sc_highpass_on: false,
-            sc_hpf_freq_hz: 80.0,
             dry_wet_percent: 100.0,
-            quack_intensity: 1.0,
         }
     }
 
     #[test]
-    fn ducks_when_sidechain_is_hot() {
-        let mut dsp = DuckerDsp::new(48_000.0);
+    fn filter_produces_output_on_signal() {
+        let mut dsp = EnvelopeFilterDsp::new(48_000.0);
         let p = snapshot();
-        let mut out = 0.0;
+        let mut max_out = 0.0f32;
         for _ in 0..5000 {
-            out = dsp.process_sample(1.0, 1.0, &p).0;
+            let (out, _, _) = dsp.process_sample(0.5, &p);
+            max_out = max_out.max(out.abs());
         }
-        assert!(out < 0.8);
+        assert!(max_out > 0.01, "Filter should produce audible output");
+    }
+
+    #[test]
+    fn envelope_tracks_input() {
+        let mut dsp = EnvelopeFilterDsp::new(48_000.0);
+        let p = snapshot();
+        // Feed silence
+        for _ in 0..1000 {
+            dsp.process_sample(0.0, &p);
+        }
+        let (_, env_silent, _) = dsp.process_sample(0.0, &p);
+        // Feed loud signal
+        for _ in 0..1000 {
+            dsp.process_sample(0.8, &p);
+        }
+        let (_, env_loud, _) = dsp.process_sample(0.8, &p);
+        assert!(env_loud > env_silent, "Envelope should increase with louder input");
+    }
+
+    #[test]
+    fn cutoff_moves_with_direction() {
+        let mut dsp_up = EnvelopeFilterDsp::new(48_000.0);
+        let mut dsp_down = EnvelopeFilterDsp::new(48_000.0);
+        let mut p_up = snapshot();
+        p_up.direction = Direction::Up;
+        p_up.pre_comp_on = false;
+        p_up.sensitivity = 1.0;
+        let mut p_down = snapshot();
+        p_down.direction = Direction::Down;
+        p_down.pre_comp_on = false;
+        p_down.sensitivity = 1.0;
+
+        // Feed identical loud signal to build envelope
+        for _ in 0..4000 {
+            dsp_up.process_sample(0.9, &p_up);
+            dsp_down.process_sample(0.9, &p_down);
+        }
+        let (_, _, cutoff_up) = dsp_up.process_sample(0.9, &p_up);
+        let (_, _, cutoff_down) = dsp_down.process_sample(0.9, &p_down);
+        // UP: cutoff near freq_max; DOWN: cutoff near freq_min
+        assert!(
+            cutoff_up > cutoff_down,
+            "UP cutoff ({cutoff_up}) should be higher than DOWN cutoff ({cutoff_down})"
+        );
     }
 }

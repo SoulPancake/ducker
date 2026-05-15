@@ -1,4 +1,4 @@
-use crate::{dsp::DuckerDsp, meter::MeterData, params::Params};
+use crate::{dsp::EnvelopeFilterDsp, meter::MeterData, params::Params};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::{
@@ -53,7 +53,6 @@ pub struct AudioSettings {
     pub input_device_name: Option<String>,
     pub output_device_name: Option<String>,
     pub main_channel: usize,
-    pub sidechain_channel: usize,
     pub sample_rate_hz: Option<u32>,
     pub buffer_size: Option<u32>,
 }
@@ -64,7 +63,6 @@ impl Default for AudioSettings {
             input_device_name: None,
             output_device_name: None,
             main_channel: 0,
-            sidechain_channel: 1,
             sample_rate_hz: Some(48_000),
             buffer_size: Some(256),
         }
@@ -322,28 +320,16 @@ fn build_streams(
         .latency_ms_bits
         .store(latency_ms.to_bits(), Ordering::Relaxed);
 
-    let (input_pair_tx, input_pair_rx) = bounded::<(f32, f32)>(4096);
+    let (input_tx, input_rx) = bounded::<f32>(4096);
 
     let input_channels = input_cfg.channels as usize;
     let output_channels = output_cfg.channels as usize;
-    let mut main_channel = settings.main_channel;
-    let mut side_channel = settings.sidechain_channel;
+    let main_channel = settings.main_channel.min(input_channels.saturating_sub(1));
 
-    // Safety check: ensure channels are valid and different
-    main_channel = main_channel.min(input_channels.saturating_sub(1));
-    side_channel = side_channel.min(input_channels.saturating_sub(1));
-    if main_channel == side_channel && input_channels > 1 {
-        side_channel = (side_channel + 1) % input_channels;
-    }
-
-    // If we still can't get separate channels, use main for both and tell the user
-    let using_same_channel = main_channel == side_channel;
-    if using_same_channel {
-        eprintln!("[AUDIO] Using Channel {} for BOTH main and sidechain (no separate channels available)", main_channel);
-        eprintln!("   → Guitar dynamics will duck themselves = obvious ducking effect!");
-    } else {
-        eprintln!("[AUDIO] Setup: {} input channels, Main={}, Side={}", input_channels, main_channel, side_channel);
-    }
+    eprintln!(
+        "[AUDIO] Setup: {} input channels, Main={}",
+        input_channels, main_channel
+    );
 
     let input_err_status = status_tx.clone();
     let output_err_status = status_tx.clone();
@@ -354,10 +340,7 @@ fn build_streams(
             move |data: &[f32], _| {
                 for frame in data.chunks(input_channels.max(1)) {
                     let main = frame.get(main_channel).copied().unwrap_or(0.0);
-                    let raw_side = frame.get(side_channel).copied().unwrap_or(0.0);
-                    // For simple EVO4 single-cable workflows, use main as sidechain if SC is silent.
-                    let side = if raw_side.abs() < 1e-5 { main } else { raw_side };
-                    let _ = input_pair_tx.try_send((main, side));
+                    let _ = input_tx.try_send(main);
                 }
             },
             move |err| {
@@ -368,7 +351,7 @@ fn build_streams(
         )
         .map_err(|e| format!("Failed to build input stream: {e}"))?;
 
-    let mut dsp = DuckerDsp::new(output_cfg.sample_rate as f32);
+    let mut dsp = EnvelopeFilterDsp::new(output_cfg.sample_rate as f32);
 
     let meter_interval_samples = ((output_cfg.sample_rate as f32) * 0.03) as usize;
     let meter_interval_samples = meter_interval_samples.max(1);
@@ -383,24 +366,25 @@ fn build_streams(
                 let params_snapshot = params.snapshot();
 
                 let mut input_peak = 0.0f32;
-                let mut side_peak = 0.0f32;
                 let mut output_peak = 0.0f32;
-                let mut gr_db = 0.0f32;
+                let mut last_envelope = 0.0f32;
+                let mut last_cutoff = 0.0f32;
                 let mut sample_counter = 0usize;
 
                 for frame in data.chunks_mut(output_channels.max(1)) {
-                    let (main, side) = input_pair_rx.try_recv().unwrap_or((0.0, 0.0));
+                    let main = input_rx.try_recv().unwrap_or(0.0);
                     input_peak = input_peak.max(main.abs());
-                    side_peak = side_peak.max(side.abs());
 
-                    let (ducked, this_gr) = dsp.process_sample(main, side, &params_snapshot);
-                    gr_db = this_gr;
+                    let (out, envelope, cutoff_hz) =
+                        dsp.process_sample(main, &params_snapshot);
+                    last_envelope = envelope;
+                    last_cutoff = cutoff_hz;
 
                     if !frame.is_empty() {
-                        frame[0] = ducked;
+                        frame[0] = out;
                     }
                     if frame.len() > 1 {
-                        frame[1] = ducked;
+                        frame[1] = out;
                     }
                     if frame.len() > 2 {
                         for sample in frame.iter_mut().skip(2) {
@@ -408,20 +392,19 @@ fn build_streams(
                         }
                     }
 
-                    output_peak = output_peak.max(ducked.abs());
+                    output_peak = output_peak.max(out.abs());
 
                     sample_counter = sample_counter.saturating_add(1);
                     if sample_counter >= meter_interval_samples {
                         sample_counter = 0;
 
                         let input_db = 20.0 * input_peak.max(1e-6).log10();
-                        let side_db = 20.0 * side_peak.max(1e-6).log10();
                         let output_db = 20.0 * output_peak.max(1e-6).log10();
 
                         let _ = meter_tx.try_send(MeterData {
                             input_peak_db: input_db.max(-120.0),
-                            sidechain_peak_db: side_db.max(-120.0),
-                            gain_reduction_db: gr_db.min(0.0),
+                            envelope: last_envelope,
+                            cutoff_hz: last_cutoff,
                             output_peak_db: output_db.max(-120.0),
                         });
                     }
