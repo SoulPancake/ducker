@@ -1,0 +1,14 @@
+[package]
+name = "ducker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "*"
+egui = "*"
+eframe = { version = "*", features = ["default_fonts", "persistence"] }
+crossbeam-channel = "*"
+serde = { version = "*", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-sys = { version = "*", optional = true }
