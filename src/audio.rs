@@ -326,8 +326,24 @@ fn build_streams(
 
     let input_channels = input_cfg.channels as usize;
     let output_channels = output_cfg.channels as usize;
-    let main_channel = settings.main_channel;
-    let side_channel = settings.sidechain_channel;
+    let mut main_channel = settings.main_channel;
+    let mut side_channel = settings.sidechain_channel;
+
+    // Safety check: ensure channels are valid and different
+    main_channel = main_channel.min(input_channels.saturating_sub(1));
+    side_channel = side_channel.min(input_channels.saturating_sub(1));
+    if main_channel == side_channel && input_channels > 1 {
+        side_channel = (side_channel + 1) % input_channels;
+    }
+
+    // If we still can't get separate channels, use main for both and tell the user
+    let using_same_channel = main_channel == side_channel;
+    if using_same_channel {
+        eprintln!("[AUDIO] Using Channel {} for BOTH main and sidechain (no separate channels available)", main_channel);
+        eprintln!("   → Guitar dynamics will duck themselves = obvious ducking effect!");
+    } else {
+        eprintln!("[AUDIO] Setup: {} input channels, Main={}, Side={}", input_channels, main_channel, side_channel);
+    }
 
     let input_err_status = status_tx.clone();
     let output_err_status = status_tx.clone();
@@ -338,7 +354,9 @@ fn build_streams(
             move |data: &[f32], _| {
                 for frame in data.chunks(input_channels.max(1)) {
                     let main = frame.get(main_channel).copied().unwrap_or(0.0);
-                    let side = frame.get(side_channel).copied().unwrap_or(0.0);
+                    let raw_side = frame.get(side_channel).copied().unwrap_or(0.0);
+                    // For simple EVO4 single-cable workflows, use main as sidechain if SC is silent.
+                    let side = if raw_side.abs() < 1e-5 { main } else { raw_side };
                     let _ = input_pair_tx.try_send((main, side));
                 }
             },

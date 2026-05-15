@@ -28,6 +28,7 @@ pub struct Params {
     sc_highpass_on: AtomicU32,
     sc_hpf_freq_hz: AtomicU32,
     dry_wet_percent: AtomicU32,
+    quack_intensity: AtomicU32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,20 +42,22 @@ pub struct ParamsSnapshot {
     pub sc_highpass_on: bool,
     pub sc_hpf_freq_hz: f32,
     pub dry_wet_percent: f32,
+    pub quack_intensity: f32,
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
-            threshold_db: AtomicU32::new((-20.0f32).to_bits()),
-            ratio: AtomicU32::new((4.0f32).to_bits()),
-            attack_ms: AtomicU32::new((5.0f32).to_bits()),
-            release_ms: AtomicU32::new((150.0f32).to_bits()),
-            knee_db: AtomicU32::new((3.0f32).to_bits()),
+            threshold_db: AtomicU32::new((-30.0f32).to_bits()),
+            ratio: AtomicU32::new((10.0f32).to_bits()),
+            attack_ms: AtomicU32::new((1.0f32).to_bits()),
+            release_ms: AtomicU32::new((120.0f32).to_bits()),
+            knee_db: AtomicU32::new((1.0f32).to_bits()),
             makeup_db: AtomicU32::new((0.0f32).to_bits()),
-            sc_highpass_on: AtomicU32::new(1),
+            sc_highpass_on: AtomicU32::new(0),
             sc_hpf_freq_hz: AtomicU32::new((80.0f32).to_bits()),
             dry_wet_percent: AtomicU32::new((100.0f32).to_bits()),
+            quack_intensity: AtomicU32::new((1.0f32).to_bits()),
         }
     }
 }
@@ -142,6 +145,14 @@ impl Params {
         Self::get_f32(&self.dry_wet_percent)
     }
 
+    pub fn set_quack_intensity(&self, v: f32) {
+        Self::set_f32(&self.quack_intensity, v.clamp(0.1, 10.0));
+    }
+
+    pub fn get_quack_intensity(&self) -> f32 {
+        Self::get_f32(&self.quack_intensity)
+    }
+
     pub fn snapshot(&self) -> ParamsSnapshot {
         ParamsSnapshot {
             threshold_db: self.get_threshold(),
@@ -153,6 +164,7 @@ impl Params {
             sc_highpass_on: self.get_sc_highpass_on(),
             sc_hpf_freq_hz: self.get_sc_hpf_freq_hz(),
             dry_wet_percent: self.get_dry_wet_percent(),
+            quack_intensity: self.get_quack_intensity(),
         }
     }
 }

@@ -4,11 +4,7 @@ use crate::{
         AudioEngineHandle, AudioSettings, AudioStatus,
     },
     meter::{MeterData, PeakHold},
-    params::{
-        Params, ATTACK_MAX, ATTACK_MIN, HPF_MAX, HPF_MIN, KNEE_MAX, KNEE_MIN, MAKEUP_MAX,
-        MAKEUP_MIN, MIX_MAX, MIX_MIN, RATIO_MAX, RATIO_MIN, RELEASE_MAX, RELEASE_MIN,
-        THRESHOLD_MAX, THRESHOLD_MIN,
-    },
+    params::Params,
 };
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use serde::{Deserialize, Serialize};
@@ -18,15 +14,7 @@ const APP_KEY: &str = "ducker-app-state";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedState {
-    threshold_db: f32,
-    ratio: f32,
-    attack_ms: f32,
-    release_ms: f32,
-    knee_db: f32,
-    makeup_db: f32,
-    sc_highpass_on: bool,
-    sc_hpf_freq_hz: f32,
-    dry_wet_percent: f32,
+    quack_intensity: f32,
     input_device_name: Option<String>,
     output_device_name: Option<String>,
     main_channel: usize,
@@ -38,15 +26,7 @@ struct PersistedState {
 impl Default for PersistedState {
     fn default() -> Self {
         Self {
-            threshold_db: -20.0,
-            ratio: 4.0,
-            attack_ms: 5.0,
-            release_ms: 150.0,
-            knee_db: 3.0,
-            makeup_db: 0.0,
-            sc_highpass_on: true,
-            sc_hpf_freq_hz: 80.0,
-            dry_wet_percent: 100.0,
+            quack_intensity: 1.0,
             input_device_name: None,
             output_device_name: None,
             main_channel: 0,
@@ -67,6 +47,7 @@ pub struct DuckerApp {
     side_peak_hold: PeakHold,
     gr_peak_hold: PeakHold,
     output_peak_hold: PeakHold,
+    last_button_click: std::time::Instant,
 }
 
 impl DuckerApp {
@@ -77,15 +58,7 @@ impl DuckerApp {
             .unwrap_or_default();
 
         let params = Arc::new(Params::default());
-        params.set_threshold(state.threshold_db);
-        params.set_ratio(state.ratio);
-        params.set_attack_ms(state.attack_ms);
-        params.set_release_ms(state.release_ms);
-        params.set_knee_db(state.knee_db);
-        params.set_makeup_db(state.makeup_db);
-        params.set_sc_highpass_on(state.sc_highpass_on);
-        params.set_sc_hpf_freq_hz(state.sc_hpf_freq_hz);
-        params.set_dry_wet_percent(state.dry_wet_percent);
+        params.set_quack_intensity(state.quack_intensity);
 
         let engine = spawn_audio_engine(
             Arc::clone(&params),
@@ -109,6 +82,7 @@ impl DuckerApp {
             side_peak_hold: PeakHold::new(),
             gr_peak_hold: PeakHold::new(),
             output_peak_hold: PeakHold::new(),
+            last_button_click: std::time::Instant::now(),
         }
     }
 
@@ -124,6 +98,17 @@ impl DuckerApp {
                 sample_rate_hz: Some(self.state.sample_rate_hz),
                 buffer_size: Some(self.state.buffer_size),
             }));
+    }
+
+    fn can_click_button(&mut self) -> bool {
+        const DEBOUNCE_MS: u128 = 50;
+        let elapsed = self.last_button_click.elapsed().as_millis();
+        if elapsed >= DEBOUNCE_MS {
+            self.last_button_click = std::time::Instant::now();
+            true
+        } else {
+            false
+        }
     }
 
     fn knob(
@@ -251,6 +236,62 @@ impl DuckerApp {
             Color32::from_gray(180),
         );
     }
+
+    fn draw_duck_mascot(ui: &mut egui::Ui, time_s: f32, activity: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(180.0, 130.0), Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        let activity = activity.clamp(0.0, 1.0);
+        let bob = (time_s * 3.2).sin() * (2.0 + (activity * 5.0));
+        let wing_swing = (time_s * (7.0 + activity * 5.0)).sin() * (3.0 + activity * 7.0);
+
+        let body = Pos2::new(rect.center().x, rect.center().y + 22.0 + bob);
+        let head = Pos2::new(rect.center().x + 30.0, rect.center().y - 4.0 + bob);
+
+        let yellow = Color32::from_rgb(255, 220, 55);
+        let yellow_dark = Color32::from_rgb(230, 190, 35);
+        let orange = Color32::from_rgb(255, 140, 35);
+
+        painter.circle_filled(body, 42.0, yellow);
+        painter.circle_filled(head, 28.0, yellow);
+        painter.circle_stroke(body, 42.0, Stroke::new(2.0, yellow_dark));
+        painter.circle_stroke(head, 28.0, Stroke::new(2.0, yellow_dark));
+
+        let wing = [
+            Pos2::new(body.x - 4.0, body.y - 10.0),
+            Pos2::new(body.x - 24.0 - wing_swing, body.y + 8.0 - wing_swing * 0.25),
+            Pos2::new(body.x + 8.0, body.y + 18.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            wing.to_vec(),
+            yellow_dark,
+            Stroke::NONE,
+        ));
+
+        let beak = [
+            Pos2::new(head.x + 18.0, head.y + 3.0),
+            Pos2::new(head.x + 48.0, head.y + 10.0),
+            Pos2::new(head.x + 18.0, head.y + 16.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            beak.to_vec(),
+            orange,
+            Stroke::new(1.0, Color32::from_rgb(220, 110, 30)),
+        ));
+
+        let eye = Pos2::new(head.x + 7.0, head.y - 5.0);
+        painter.circle_filled(eye, 5.0, Color32::BLACK);
+        painter.circle_filled(Pos2::new(eye.x - 1.5, eye.y - 1.5), 1.6, Color32::WHITE);
+
+        let bubble_alpha = (40.0 + activity * 160.0) as u8;
+        painter.text(
+            Pos2::new(head.x + 38.0, head.y - 28.0),
+            egui::Align2::CENTER_CENTER,
+            "quack!",
+            egui::FontId::proportional(14.0),
+            Color32::from_rgba_unmultiplied(255, 242, 120, bubble_alpha),
+        );
+    }
 }
 
 impl eframe::App for DuckerApp {
@@ -260,14 +301,31 @@ impl eframe::App for DuckerApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        ctx.request_repaint();
+        let mut had_update = false;
+
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = Color32::from_rgb(20, 18, 36);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(255, 184, 46);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(255, 206, 92);
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(66, 56, 102);
+        visuals.widgets.active.fg_stroke.color = Color32::from_rgb(25, 22, 35);
+        visuals.widgets.hovered.fg_stroke.color = Color32::from_rgb(25, 22, 35);
+        ctx.set_visuals(visuals);
 
         while let Ok(status) = self.engine.status_rx.try_recv() {
             self.status = status;
+            had_update = true;
         }
 
         while let Ok(meter) = self.engine.meter_rx.try_recv() {
             self.meter_data = meter;
+            had_update = true;
+        }
+
+        if had_update {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
 
         self.input_peak_hold.update(self.meter_data.input_peak_db);
@@ -278,12 +336,13 @@ impl eframe::App for DuckerApp {
         self.output_peak_hold.update(self.meter_data.output_peak_db);
 
         egui::TopBottomPanel::top("title").show(&ctx, |ui| {
-            ui.set_height(86.0);
+            ui.set_height(92.0);
             ui.horizontal(|ui| {
                 ui.heading(
-                    egui::RichText::new("DUCKER")
+                    egui::RichText::new("DUCKER  🦆")
                         .monospace()
-                        .size(30.0)
+                        .size(34.0)
+                        .color(Color32::from_rgb(255, 214, 64))
                         .strong(),
                 );
                 ui.add_space(8.0);
@@ -438,141 +497,75 @@ impl eframe::App for DuckerApp {
         });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(Color32::from_rgb(0x1a, 0x1a, 0x1a)))
+            .frame(
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(26, 23, 48))
+                    .inner_margin(egui::Margin::same(18)),
+            )
             .show(&ctx, |ui| {
-                ui.add_space(6.0);
+                egui::Frame::default()
+                    .fill(Color32::from_rgb(39, 33, 69))
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::same(20))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            let time_s = ctx.input(|i| i.time) as f32;
+                            let activity = ((self.meter_data.input_peak_db + 60.0) / 60.0).clamp(0.0, 1.0);
 
-                ui.horizontal_wrapped(|ui| {
-                    let mut threshold = self.params.get_threshold();
-                    if Self::knob(
-                        ui,
-                        &mut threshold,
-                        THRESHOLD_MIN..=THRESHOLD_MAX,
-                        "THRESHOLD",
-                        " dB",
-                    ) {
-                        self.params.set_threshold(threshold);
-                        self.state.threshold_db = threshold;
-                    }
+                            ui.label(
+                                egui::RichText::new("Make It Quack")
+                                    .size(24.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(255, 214, 64)),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new("Guitar In -> Duck Out")
+                                    .size(14.0)
+                                    .color(Color32::from_rgb(180, 174, 210)),
+                            );
+                            ui.add_space(10.0);
 
-                    let mut ratio = self.params.get_ratio();
-                    if Self::knob(ui, &mut ratio, RATIO_MIN..=RATIO_MAX, "RATIO", "") {
-                        self.params.set_ratio(ratio);
-                        self.state.ratio = ratio;
-                    }
+                            Self::draw_duck_mascot(ui, time_s, activity);
+                            ui.add_space(8.0);
 
-                    let mut attack = self.params.get_attack_ms();
-                    if Self::knob(ui, &mut attack, ATTACK_MIN..=ATTACK_MAX, "ATTACK", " ms") {
-                        self.params.set_attack_ms(attack);
-                        self.state.attack_ms = attack;
-                    }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_sized([180.0, 44.0], egui::Button::new("Less Quack"))
+                                    .clicked()
+                                    && self.can_click_button()
+                                {
+                                    let mut intensity = self.params.get_quack_intensity();
+                                    intensity = (intensity - 0.2).max(0.1);
+                                    self.params.set_quack_intensity(intensity);
+                                    self.state.quack_intensity = intensity;
+                                }
 
-                    let mut release = self.params.get_release_ms();
-                    if Self::knob(
-                        ui,
-                        &mut release,
-                        RELEASE_MIN..=RELEASE_MAX,
-                        "RELEASE",
-                        " ms",
-                    ) {
-                        self.params.set_release_ms(release);
-                        self.state.release_ms = release;
-                    }
+                                ui.add_space(12.0);
 
-                    let mut knee = self.params.get_knee_db();
-                    if Self::knob(ui, &mut knee, KNEE_MIN..=KNEE_MAX, "KNEE", " dB") {
-                        self.params.set_knee_db(knee);
-                        self.state.knee_db = knee;
-                    }
+                                if ui
+                                    .add_sized([180.0, 44.0], egui::Button::new("More Quack"))
+                                    .clicked()
+                                    && self.can_click_button()
+                                {
+                                    let mut intensity = self.params.get_quack_intensity();
+                                    intensity = (intensity + 0.2).min(10.0);
+                                    self.params.set_quack_intensity(intensity);
+                                    self.state.quack_intensity = intensity;
+                                }
+                            });
 
-                    let mut makeup = self.params.get_makeup_db();
-                    if Self::knob(ui, &mut makeup, MAKEUP_MIN..=MAKEUP_MAX, "MAKEUP", " dB") {
-                        self.params.set_makeup_db(makeup);
-                        self.state.makeup_db = makeup;
-                    }
-
-                    let mut mix = self.params.get_dry_wet_percent();
-                    if Self::knob(ui, &mut mix, MIX_MIN..=MIX_MAX, "DRY/WET", " %") {
-                        self.params.set_dry_wet_percent(mix);
-                        self.state.dry_wet_percent = mix;
-                    }
-                });
-
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    let mut hp_on = self.params.get_sc_highpass_on();
-                    if ui
-                        .button(if hp_on {
-                            "SC HIGHPASS ON"
-                        } else {
-                            "SC HIGHPASS OFF"
-                        })
-                        .clicked()
-                    {
-                        hp_on = !hp_on;
-                        self.params.set_sc_highpass_on(hp_on);
-                        self.state.sc_highpass_on = hp_on;
-                    }
-
-                    let mut hpf = self.params.get_sc_hpf_freq_hz();
-                    ui.add_enabled_ui(hp_on, |ui| {
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut hpf, HPF_MIN..=HPF_MAX)
-                                    .text("SC HPF FREQ (Hz)"),
-                            )
-                            .changed()
-                        {
-                            self.params.set_sc_hpf_freq_hz(hpf);
-                            self.state.sc_hpf_freq_hz = hpf;
-                        }
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Quack Intensity: {:.1}x",
+                                    self.params.get_quack_intensity()
+                                ))
+                                .size(18.0)
+                                .color(Color32::from_rgb(255, 235, 125)),
+                            );
+                        });
                     });
-                });
-
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("dBFS").color(Color32::from_gray(170)));
-                        for lbl in ["0", "-6", "-12", "-18", "-24", "-36", "-60"] {
-                            ui.label(egui::RichText::new(lbl).color(Color32::from_gray(140)));
-                        }
-                    });
-
-                    Self::meter_bar(
-                        ui,
-                        "INPUT",
-                        self.meter_data.input_peak_db,
-                        self.input_peak_hold.value(),
-                        false,
-                        Color32::GREEN,
-                    );
-                    Self::meter_bar(
-                        ui,
-                        "SIDECHAIN",
-                        self.meter_data.sidechain_peak_db,
-                        self.side_peak_hold.value(),
-                        false,
-                        Color32::from_rgb(180, 220, 80),
-                    );
-                    Self::meter_bar(
-                        ui,
-                        "GR",
-                        self.meter_data.gain_reduction_db,
-                        self.gr_peak_hold.value(),
-                        true,
-                        Color32::from_rgb(0x00, 0xAA, 0xFF),
-                    );
-                    Self::meter_bar(
-                        ui,
-                        "OUTPUT",
-                        self.meter_data.output_peak_db,
-                        self.output_peak_hold.value(),
-                        false,
-                        Color32::from_rgb(230, 120, 80),
-                    );
-                });
             });
 
         egui::TopBottomPanel::bottom("footer").show(&ctx, |ui| {
