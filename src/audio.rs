@@ -218,10 +218,8 @@ fn choose_config(
     requested_sr: Option<u32>,
     requested_buf: Option<u32>,
 ) -> Result<(cpal::StreamConfig, cpal::StreamConfig), String> {
-    let preferred = requested_sr
-        .into_iter()
-        .chain([48_000_u32, 44_100_u32])
-        .collect::<Vec<_>>();
+    let requested = requested_sr.filter(|sr| *sr != 48_000 && *sr != 44_100);
+    let preferred_sample_rates = requested.into_iter().chain([48_000_u32, 44_100_u32]);
 
     let input_cfgs = input
         .supported_input_configs()
@@ -238,12 +236,13 @@ fn choose_config(
         }
         let min = cfg.min_sample_rate();
         let max = cfg.max_sample_rate();
-        if let Some(sr) = preferred
-            .iter()
-            .copied()
-            .find(|sr| *sr >= min && *sr <= max)
-        {
-            chosen_in = Some(cfg.with_sample_rate(sr).config());
+        for candidate_rate in preferred_sample_rates.clone() {
+            if candidate_rate >= min && candidate_rate <= max {
+                chosen_in = Some(cfg.with_sample_rate(candidate_rate).config());
+                break;
+            }
+        }
+        if chosen_in.is_some() {
             break;
         }
     }
@@ -255,12 +254,13 @@ fn choose_config(
         }
         let min = cfg.min_sample_rate();
         let max = cfg.max_sample_rate();
-        if let Some(sr) = preferred
-            .iter()
-            .copied()
-            .find(|sr| *sr >= min && *sr <= max)
-        {
-            chosen_out = Some(cfg.with_sample_rate(sr).config());
+        for candidate_rate in preferred_sample_rates.clone() {
+            if candidate_rate >= min && candidate_rate <= max {
+                chosen_out = Some(cfg.with_sample_rate(candidate_rate).config());
+                break;
+            }
+        }
+        if chosen_out.is_some() {
             break;
         }
     }
@@ -268,9 +268,9 @@ fn choose_config(
     let mut input_cfg = chosen_in.ok_or_else(|| "No f32 input config found".to_string())?;
     let mut output_cfg = chosen_out.ok_or_else(|| "No f32 output config found".to_string())?;
 
-    let sr = input_cfg.sample_rate.min(output_cfg.sample_rate);
-    input_cfg.sample_rate = sr;
-    output_cfg.sample_rate = sr;
+    let chosen_sample_rate = input_cfg.sample_rate.min(output_cfg.sample_rate);
+    input_cfg.sample_rate = chosen_sample_rate;
+    output_cfg.sample_rate = chosen_sample_rate;
 
     let buf = requested_buf.unwrap_or(256);
     input_cfg.buffer_size = cpal::BufferSize::Fixed(buf);

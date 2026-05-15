@@ -1,5 +1,8 @@
 use crate::params::ParamsSnapshot;
 
+const TWO_PI: f32 = 2.0 * std::f32::consts::PI;
+const MIN_HPF_CUTOFF_HZ: f32 = 1.0;
+
 #[derive(Debug)]
 pub struct DuckerDsp {
     sample_rate: f32,
@@ -27,7 +30,7 @@ impl DuckerDsp {
     }
 
     fn highpass(&mut self, sample: f32, cutoff_hz: f32) -> f32 {
-        let coeff = (-2.0 * std::f32::consts::PI * cutoff_hz.max(1.0) / self.sample_rate).exp();
+        let coeff = (-TWO_PI * cutoff_hz.max(MIN_HPF_CUTOFF_HZ) / self.sample_rate).exp();
         let y = coeff * (self.hp_y1 + sample - self.hp_x1);
         self.hp_x1 = sample;
         self.hp_y1 = y;

@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+const PEAK_FALL_AMOUNT_DB: f32 = 30.0;
+const PEAK_FALL_TIME_SECONDS: f32 = 0.3;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeterData {
     pub input_peak_db: f32,
@@ -33,7 +36,7 @@ impl PeakHold {
             self.hold_until = now + Duration::from_secs(1);
         } else if now > self.hold_until {
             let elapsed = (now - self.last_update).as_secs_f32();
-            let fall_per_second = 30.0 / 0.3;
+            let fall_per_second = PEAK_FALL_AMOUNT_DB / PEAK_FALL_TIME_SECONDS;
             self.held_db = (self.held_db - (fall_per_second * elapsed)).max(v);
         }
         self.last_update = now;
