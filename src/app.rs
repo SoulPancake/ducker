@@ -718,18 +718,15 @@ impl eframe::App for DuckerApp {
                                     // Row 3: Compressor knobs
                                     ui.horizontal(|ui| {
                                         let comp_on = self.params.get_pre_comp_on();
-                                        let suffix = if comp_on { " (Comp)" } else { " (Comp)" };
 
                                         let mut thresh = self.params.get_comp_threshold();
-                                        let thresh_label = format!("Threshold{suffix}");
-                                        if Self::knob(ui, &mut thresh, params::COMP_THRESHOLD_MIN..=params::COMP_THRESHOLD_MAX, &thresh_label, " dB", comp_on) {
+                                        if Self::knob(ui, &mut thresh, params::COMP_THRESHOLD_MIN..=params::COMP_THRESHOLD_MAX, "Threshold (Comp)", " dB", comp_on) {
                                             self.params.set_comp_threshold(thresh);
                                             self.state.comp_threshold_db = thresh;
                                         }
 
                                         let mut ratio = self.params.get_comp_ratio();
-                                        let ratio_label = format!("Ratio{suffix}");
-                                        if Self::knob(ui, &mut ratio, params::COMP_RATIO_MIN..=params::COMP_RATIO_MAX, &ratio_label, ":1", comp_on) {
+                                        if Self::knob(ui, &mut ratio, params::COMP_RATIO_MIN..=params::COMP_RATIO_MAX, "Ratio (Comp)", ":1", comp_on) {
                                             self.params.set_comp_ratio(ratio);
                                             self.state.comp_ratio = ratio;
                                         }
