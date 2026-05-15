@@ -8,10 +8,10 @@ use app::DuckerApp;
 
 fn main() -> eframe::Result<()> {
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([820.0, 620.0])
+        .with_inner_size([820.0, 740.0])
         .with_resizable(false)
         .with_maximize_button(false)
-        .with_title("ENVELOPE FILTER");
+        .with_title("DUCKER");
 
     let options = eframe::NativeOptions {
         viewport,
@@ -20,7 +20,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "ENVELOPE FILTER",
+        "DUCKER",
         options,
         Box::new(|cc| Ok(Box::new(DuckerApp::new(cc)))),
     )

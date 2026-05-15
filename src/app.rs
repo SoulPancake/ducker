@@ -374,6 +374,62 @@ impl DuckerApp {
             Color32::from_gray(180),
         );
     }
+
+    fn draw_duck_mascot(ui: &mut egui::Ui, time_s: f32, activity: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(180.0, 130.0), Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        let activity = activity.clamp(0.0, 1.0);
+        let bob = (time_s * 3.2).sin() * (2.0 + (activity * 5.0));
+        let wing_swing = (time_s * (7.0 + activity * 5.0)).sin() * (3.0 + activity * 7.0);
+
+        let body = Pos2::new(rect.center().x, rect.center().y + 22.0 + bob);
+        let head = Pos2::new(rect.center().x + 30.0, rect.center().y - 4.0 + bob);
+
+        let yellow = Color32::from_rgb(255, 220, 55);
+        let yellow_dark = Color32::from_rgb(230, 190, 35);
+        let orange = Color32::from_rgb(255, 140, 35);
+
+        painter.circle_filled(body, 42.0, yellow);
+        painter.circle_filled(head, 28.0, yellow);
+        painter.circle_stroke(body, 42.0, Stroke::new(2.0, yellow_dark));
+        painter.circle_stroke(head, 28.0, Stroke::new(2.0, yellow_dark));
+
+        let wing = [
+            Pos2::new(body.x - 4.0, body.y - 10.0),
+            Pos2::new(body.x - 24.0 - wing_swing, body.y + 8.0 - wing_swing * 0.25),
+            Pos2::new(body.x + 8.0, body.y + 18.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            wing.to_vec(),
+            yellow_dark,
+            Stroke::NONE,
+        ));
+
+        let beak = [
+            Pos2::new(head.x + 18.0, head.y + 3.0),
+            Pos2::new(head.x + 48.0, head.y + 10.0),
+            Pos2::new(head.x + 18.0, head.y + 16.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            beak.to_vec(),
+            orange,
+            Stroke::new(1.0, Color32::from_rgb(220, 110, 30)),
+        ));
+
+        let eye = Pos2::new(head.x + 7.0, head.y - 5.0);
+        painter.circle_filled(eye, 5.0, Color32::BLACK);
+        painter.circle_filled(Pos2::new(eye.x - 1.5, eye.y - 1.5), 1.6, Color32::WHITE);
+
+        let bubble_alpha = (40.0 + activity * 160.0) as u8;
+        painter.text(
+            Pos2::new(head.x + 38.0, head.y - 28.0),
+            egui::Align2::CENTER_CENTER,
+            "quack!",
+            egui::FontId::proportional(14.0),
+            Color32::from_rgba_unmultiplied(255, 242, 120, bubble_alpha),
+        );
+    }
 }
 
 impl eframe::App for DuckerApp {
@@ -423,9 +479,9 @@ impl eframe::App for DuckerApp {
             ui.set_height(92.0);
             ui.horizontal(|ui| {
                 ui.heading(
-                    egui::RichText::new("ENVELOPE FILTER")
+                    egui::RichText::new("DUCKER  \u{1F986}")
                         .monospace()
-                        .size(28.0)
+                        .size(34.0)
                         .color(Color32::from_rgb(255, 214, 64))
                         .strong(),
                 );
@@ -576,19 +632,24 @@ impl eframe::App for DuckerApp {
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
+                            let time_s = ctx.input(|i| i.time) as f32;
+                            let activity = ((self.meter_data.input_peak_db + 60.0) / 60.0).clamp(0.0, 1.0);
+
+                            ui.vertical_centered(|ui| {
                                 ui.label(
-                                    egui::RichText::new("Auto-Wah")
-                                        .size(22.0)
+                                    egui::RichText::new("Make It Quack \u{1F986}")
+                                        .size(24.0)
                                         .strong()
                                         .color(Color32::from_rgb(255, 214, 64)),
                                 );
-                                ui.add_space(12.0);
+                                ui.add_space(4.0);
                                 ui.label(
-                                    egui::RichText::new("Guitar In \u{2192} Filter Out")
-                                        .size(13.0)
+                                    egui::RichText::new("Guitar In \u{2192} Duck Out")
+                                        .size(14.0)
                                         .color(Color32::from_rgb(180, 174, 210)),
                                 );
+                                ui.add_space(4.0);
+                                Self::draw_duck_mascot(ui, time_s, activity);
                             });
                             ui.add_space(8.0);
 
